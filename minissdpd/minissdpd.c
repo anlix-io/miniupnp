@@ -89,6 +89,11 @@ struct service {
 };
 LIST_HEAD(servicehead, service) servicelisthead;
 
+struct upnp_enabled_dev {
+	struct upnp_enabled_dev * next;
+	char * lan_addr;
+};
+
 #define NTS_SSDP_ALIVE	1
 #define NTS_SSDP_BYEBYE	2
 #define NTS_SSDP_UPDATE	3
@@ -105,6 +110,8 @@ enum request_type {
 
 /* discovered device list kept in memory */
 struct device * devlist = 0;
+
+struct upnp_enabled_dev * enabled_devlist = NULL;
 
 /* bootid and configid */
 unsigned int upnp_bootid = 1;
@@ -625,6 +632,7 @@ ParseSSDPPacket(int s, const char * p, ssize_t n,
 	unsigned int lifetime = 180;	/* 3 minutes by default */
 	const char * st = NULL;
 	int st_len = 0;
+	struct upnp_enabled_dev *current = enabled_devlist;
 
 	/* first check from what subnet is the sender */
 	if(get_lan_for_peer(addr) == NULL) {
@@ -787,7 +795,14 @@ ParseSSDPPacket(int s, const char * p, ssize_t n,
 		}
 		break;
 	case METHOD_MSEARCH:
-		processMSEARCH(s, st, st_len, addr);
+		while (current != NULL) {
+		  char * req_ip = inet_ntoa(((const struct sockaddr_in *)addr)->sin_addr);
+		  if(strcmp(req_ip, current->lan_addr) == 0) {
+		  	processMSEARCH(s, st, st_len, addr);
+		  	break;
+		  }
+		  current = current->next;
+		}
 		break;
 	default:
 		{
@@ -1260,6 +1275,12 @@ int main(int argc, char * * argv)
 	unsigned char ttl = 2;	/* UDA says it should default to 2 */
 	const char * searched_device = NULL;	/* if not NULL, search/filter a specific device type */
 
+	FILE *fd;
+	char *lan_dev_addr;
+	char *last_char;
+	char enabled_dev_line[128];
+	const char *enabled_upnp_file = "/etc/enabled_upnp_devices";
+
 	LIST_INIT(&reqlisthead);
 	LIST_INIT(&servicelisthead);
 	LIST_INIT(&lan_addrs);
@@ -1336,6 +1357,36 @@ int main(int argc, char * * argv)
 	}
 
 	upnp_bootid = (unsigned int)time(NULL);
+
+	fd = fopen(enabled_upnp_file, "r");
+	if (fd == NULL) {
+		syslog(LOG_ERR, "Cannot open upnp enabled devices file.");
+	} else {
+		struct upnp_enabled_dev ** pp_udevlist = &enabled_devlist;
+		struct upnp_enabled_dev * p_udevlist = *pp_udevlist; /* enabled_devlist */
+
+		while(fgets(enabled_dev_line, sizeof(enabled_dev_line), fd)) {
+			lan_dev_addr = strchr(enabled_dev_line, ',');
+			if(!lan_dev_addr) {
+			  continue;
+			}
+			*(lan_dev_addr++) = '\0';
+			last_char = &lan_dev_addr[strlen(lan_dev_addr) -1];
+			if (strcmp(last_char, "\n") == 0) {
+			  *last_char = '\0';
+			}
+
+			p_udevlist = malloc(sizeof(struct upnp_enabled_dev));
+			if(!p_udevlist) {
+				syslog(LOG_ERR, "Create allowed list: cannot allocate memory");
+				return 1;
+			}
+			p_udevlist->next = enabled_devlist;
+			p_udevlist->lan_addr = strdup(lan_dev_addr);
+			enabled_devlist = p_udevlist;
+		}
+		fclose(fd);
+	}
 
 	/* set signal handlers */
 	memset(&sa, 0, sizeof(struct sigaction));
@@ -1638,6 +1689,14 @@ quit:
 		free(serv->server);
 		free(serv->location);
 		free(serv);
+	}
+	struct upnp_enabled_dev *tmp;
+	while(enabled_devlist)
+	{
+	  tmp = enabled_devlist;
+	  enabled_devlist = tmp->next;
+	  free(tmp->lan_addr);
+	  free(tmp);
 	}
 	if(unlink(pidfilename) < 0)
 		syslog(LOG_ERR, "unlink(%s): %m", pidfilename);
