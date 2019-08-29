@@ -460,6 +460,14 @@ ProcessIncomingHTTP(int shttpl, const char * protocol)
 		struct upnphttp * tmp = 0;
 		char addr_str[64];
 
+		if(!check_upnp_rule_against_permissions(upnppermlist, num_upnpperm,
+												30000, clientname.sin_addr,
+												30000))
+		{
+			syslog(LOG_INFO, "HTTP permission check failed");
+			close(shttp);
+		}
+
 		sockaddr_to_string((struct sockaddr *)&clientname, addr_str, sizeof(addr_str));
 #ifdef DEBUG
 		syslog(LOG_DEBUG, "%s connection from %s", protocol, addr_str);
@@ -1990,7 +1998,8 @@ main(int argc, char * * argv)
 #endif	/* ENABLE_IPV6 */
 
 		/* open socket for SSDP connections */
-		sudp = OpenAndConfSSDPReceiveSocket(0);
+		// sudp = OpenAndConfSSDPReceiveSocket(0);
+		sudp = -1;
 		if(sudp < 0)
 		{
 			syslog(LOG_NOTICE, "Failed to open socket for receiving SSDP. Trying to use MiniSSDPd");
